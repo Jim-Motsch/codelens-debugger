@@ -94,20 +94,44 @@ const SEVERITY_CONFIG = {
   info:    { color: "#8be9fd", bg: "#8be9fd15", icon: "ℹ", label: "Info" },
 };
 
+// Quick prompt suggestions shown in chat
+const QUICK_PROMPTS = [
+  "Fix all errors for me",
+  "Explain the worst bug",
+  "How do I prevent these issues?",
+  "Rewrite this code cleanly",
+];
+
 export default function CodeLens() {
   const [code, setCode] = useState(SAMPLE_CODE.python);
   const [language, setLanguage] = useState("python");
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
-  const [activeTab, setActiveTab] = useState("editor"); // editor | history
+  const [activeTab, setActiveTab] = useState("editor");
   const [hoveredLine, setHoveredLine] = useState(null);
+
+  // Chat state
+  const [chatMessages, setChatMessages] = useState([]); // { role, content }
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [rightTab, setRightTab] = useState("results"); // results | chat
+
   const textareaRef = useRef(null);
   const lineNumbersRef = useRef(null);
+  const chatBottomRef = useRef(null);
+  const chatInputRef = useRef(null);
 
   useEffect(() => {
     fetchHistory();
   }, []);
+
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    if (chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, chatLoading]);
 
   async function fetchHistory() {
     try {
@@ -120,6 +144,8 @@ export default function CodeLens() {
   async function analyzeCode() {
     if (!code.trim()) return;
     setLoading(true);
+    // Reset chat when code changes and is re-analyzed
+    setChatMessages([]);
     try {
       const res = await fetch(`${API}/analyze`, {
         method: "POST",
@@ -129,21 +155,86 @@ export default function CodeLens() {
       const data = await res.json();
       setResults(data);
       fetchHistory();
+      // Auto-switch to results tab after analysis
+      setRightTab("results");
     } catch (e) {
       setResults({ error: "Failed to connect to server. Is the backend running?" });
     }
     setLoading(false);
   }
 
+  async function sendChatMessage(messageText) {
+    const msg = messageText || chatInput.trim();
+    if (!msg || chatLoading) return;
+    if (!code.trim()) return;
+
+    // Require analysis before chatting
+    if (!results || results.error) {
+      setChatMessages(prev => [...prev, {
+        role: "assistant",
+        content: "Please run an analysis first (hit the Analyze button), then I can answer questions about your code.",
+      }]);
+      return;
+    }
+
+    const newMessage = { role: "user", content: msg };
+    const updatedMessages = [...chatMessages, newMessage];
+    setChatMessages(updatedMessages);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const res = await fetch(`${API}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          language,
+          issues: results?.issues || [],
+          messages: chatMessages, // send history before the new message
+          message: msg,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        setChatMessages(prev => [...prev, {
+          role: "assistant",
+          content: `Error: ${data.error}`,
+        }]);
+      } else {
+        setChatMessages(prev => [...prev, {
+          role: "assistant",
+          content: data.reply,
+        }]);
+      }
+    } catch (e) {
+      setChatMessages(prev => [...prev, {
+        role: "assistant",
+        content: "Failed to reach the server. Make sure the backend is running.",
+      }]);
+    }
+
+    setChatLoading(false);
+  }
+
   function handleLanguageChange(lang) {
     setLanguage(lang);
     setCode(SAMPLE_CODE[lang] || "");
     setResults(null);
+    setChatMessages([]);
   }
 
   function syncScroll() {
     if (lineNumbersRef.current && textareaRef.current) {
       lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  }
+
+  function handleChatKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
     }
   }
 
@@ -155,7 +246,6 @@ export default function CodeLens() {
 
   return (
     <div style={s.container}>
-      {/* Background grid effect */}
       <div style={s.bgGrid} />
 
       <div style={s.app}>
@@ -167,7 +257,7 @@ export default function CodeLens() {
             </div>
             <div>
               <h1 style={s.logoText}>CodeLens</h1>
-              <p style={s.logoSub}>Static Analysis Debugger</p>
+              <p style={s.logoSub}>Static Analysis + AI Debugger</p>
             </div>
           </div>
 
@@ -224,7 +314,6 @@ export default function CodeLens() {
 
             {activeTab === "editor" ? (
               <div style={s.editorContainer}>
-                {/* Line numbers */}
                 <div style={s.lineNumbers} ref={lineNumbersRef}>
                   {lines.map((_, i) => (
                     <div
@@ -252,7 +341,6 @@ export default function CodeLens() {
                   ))}
                 </div>
 
-                {/* Code textarea */}
                 <textarea
                   ref={textareaRef}
                   value={code}
@@ -293,11 +381,34 @@ export default function CodeLens() {
             )}
           </div>
 
-          {/* Right: Results Panel */}
+          {/* Right: Results + Chat Panel */}
           <div style={s.resultsPanel}>
+            {/* Tab switcher: Results vs Chat */}
             <div style={s.panelHeader}>
-              <span style={s.panelTitle}>Analysis Results</span>
-              {results?.summary && (
+              <div style={s.tabRow}>
+                <button
+                  style={{ ...s.tab, ...(rightTab === "results" ? s.tabActive : {}) }}
+                  onClick={() => setRightTab("results")}
+                >
+                  Analysis Results
+                  {results?.summary?.total_issues > 0 && (
+                    <span style={s.tabBadge}>{results.summary.total_issues}</span>
+                  )}
+                </button>
+                <button
+                  style={{ ...s.tab, ...(rightTab === "chat" ? s.tabActive : {}) }}
+                  onClick={() => setRightTab("chat")}
+                >
+                  ✦ AI Chat
+                  {chatMessages.length > 0 && (
+                    <span style={{ ...s.tabBadge, backgroundColor: "#6366f130", color: "#818cf8" }}>
+                      {Math.floor(chatMessages.length / 2)}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {rightTab === "results" && results?.summary && (
                 <div style={s.summaryBadges}>
                   {results.summary.errors > 0 && (
                     <span style={{ ...s.badge, ...s.badgeError }}>
@@ -306,7 +417,7 @@ export default function CodeLens() {
                   )}
                   {results.summary.warnings > 0 && (
                     <span style={{ ...s.badge, ...s.badgeWarn }}>
-                      {results.summary.warnings} warning{results.summary.warnings !== 1 ? "s" : ""}
+                      {results.summary.warnings} warn{results.summary.warnings !== 1 ? "s" : ""}
                     </span>
                   )}
                   {results.summary.info > 0 && (
@@ -318,75 +429,177 @@ export default function CodeLens() {
               )}
             </div>
 
-            <div style={s.resultsContent}>
-              {!results ? (
-                <div style={s.emptyState}>
-                  <div style={s.emptyIcon}>⌘</div>
-                  <p style={s.emptyTitle}>Ready to analyze</p>
-                  <p style={s.emptyDesc}>
-                    Paste your code on the left and hit Analyze to find bugs,
-                    style issues, and improvement suggestions.
-                  </p>
-                </div>
-              ) : results.error ? (
-                <div style={s.errorState}>
-                  <p style={s.errorText}>{results.error}</p>
-                </div>
-              ) : results.issues?.length === 0 ? (
-                <div style={s.emptyState}>
-                  <div style={s.successIcon}>✓</div>
-                  <p style={s.emptyTitle}>No issues found!</p>
-                  <p style={s.emptyDesc}>
-                    Your code looks clean. No bugs, warnings, or style issues detected.
-                  </p>
-                </div>
-              ) : (
-                <div style={s.issuesList}>
-                  {results.issues.map((issue, idx) => {
-                    const config = SEVERITY_CONFIG[issue.severity];
-                    return (
-                      <div
-                        key={idx}
-                        style={{
-                          ...s.issueCard,
-                          borderLeftColor: config.color,
-                        }}
-                        onMouseEnter={() => setHoveredLine(issue.line)}
-                        onMouseLeave={() => setHoveredLine(null)}
+            {/* Results tab */}
+            {rightTab === "results" && (
+              <>
+                <div style={s.resultsContent}>
+                  {!results ? (
+                    <div style={s.emptyState}>
+                      <div style={s.emptyIcon}>⌘</div>
+                      <p style={s.emptyTitle}>Ready to analyze</p>
+                      <p style={s.emptyDesc}>
+                        Paste your code on the left and hit Analyze to find bugs,
+                        style issues, and improvement suggestions.
+                      </p>
+                    </div>
+                  ) : results.error ? (
+                    <div style={s.errorState}>
+                      <p style={s.errorText}>{results.error}</p>
+                    </div>
+                  ) : results.issues?.length === 0 ? (
+                    <div style={s.emptyState}>
+                      <div style={s.successIcon}>✓</div>
+                      <p style={s.emptyTitle}>No issues found!</p>
+                      <p style={s.emptyDesc}>
+                        Your code looks clean. Switch to AI Chat to ask questions or get suggestions.
+                      </p>
+                      <button
+                        onClick={() => setRightTab("chat")}
+                        style={s.switchToChatBtn}
                       >
-                        <div style={s.issueHeader}>
-                          <span
-                            style={{
-                              ...s.severityTag,
-                              backgroundColor: config.bg,
-                              color: config.color,
-                            }}
-                          >
-                            {config.icon} {config.label}
-                          </span>
-                          <span style={s.lineTag}>Line {issue.line}</span>
-                          <span style={s.categoryTag}>{issue.category}</span>
-                        </div>
-                        <p style={s.issueMessage}>{issue.message}</p>
-                        <div style={s.suggestionBox}>
-                          <span style={s.suggestionLabel}>💡 Fix:</span>
-                          <p style={s.suggestionText}>{issue.suggestion}</p>
-                        </div>
+                        ✦ Open AI Chat
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={s.issuesList}>
+                        {results.issues.map((issue, idx) => {
+                          const config = SEVERITY_CONFIG[issue.severity];
+                          return (
+                            <div
+                              key={idx}
+                              style={{ ...s.issueCard, borderLeftColor: config.color }}
+                              onMouseEnter={() => setHoveredLine(issue.line)}
+                              onMouseLeave={() => setHoveredLine(null)}
+                            >
+                              <div style={s.issueHeader}>
+                                <span style={{ ...s.severityTag, backgroundColor: config.bg, color: config.color }}>
+                                  {config.icon} {config.label}
+                                </span>
+                                <span style={s.lineTag}>Line {issue.line}</span>
+                                <span style={s.categoryTag}>{issue.category}</span>
+                              </div>
+                              <p style={s.issueMessage}>{issue.message}</p>
+                              <div style={s.suggestionBox}>
+                                <span style={s.suggestionLabel}>💡 Fix:</span>
+                                <p style={s.suggestionText}>{issue.suggestion}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
 
-            {/* Summary footer */}
-            {results?.summary && (
-              <div style={s.summaryFooter}>
-                <span>
-                  {results.summary.language.toUpperCase()} •{" "}
-                  {results.summary.lines_of_code} lines •{" "}
-                  {results.summary.total_issues} issues
-                </span>
+                      {/* CTA to open chat after seeing results */}
+                      <div style={s.chatCta}>
+                        <p style={s.chatCtaText}>Want AI to explain or fix these issues?</p>
+                        <button onClick={() => setRightTab("chat")} style={s.chatCtaBtn}>
+                          ✦ Ask AI
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {results?.summary && (
+                  <div style={s.summaryFooter}>
+                    <span>
+                      {results.summary.language.toUpperCase()} •{" "}
+                      {results.summary.lines_of_code} lines •{" "}
+                      {results.summary.total_issues} issues
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Chat tab */}
+            {rightTab === "chat" && (
+              <div style={s.chatPanel}>
+                {/* Messages */}
+                <div style={s.chatMessages}>
+                  {chatMessages.length === 0 && !chatLoading && (
+                    <div style={s.chatEmpty}>
+                      <div style={s.chatEmptyIcon}>✦</div>
+                      <p style={s.chatEmptyTitle}>CodeLens AI</p>
+                      <p style={s.chatEmptyDesc}>
+                        {results
+                          ? "Ask me anything about your code. I've already read it and seen the analysis."
+                          : "Run an analysis first, then ask me about your code."}
+                      </p>
+
+                      {results && (
+                        <div style={s.quickPrompts}>
+                          {QUICK_PROMPTS.map((prompt) => (
+                            <button
+                              key={prompt}
+                              style={s.quickPromptBtn}
+                              onClick={() => {
+                                setChatInput(prompt);
+                                sendChatMessage(prompt);
+                              }}
+                            >
+                              {prompt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {chatMessages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        ...s.chatBubble,
+                        ...(msg.role === "user" ? s.chatBubbleUser : s.chatBubbleAI),
+                      }}
+                    >
+                      <div style={msg.role === "user" ? s.chatLabelUser : s.chatLabelAI}>
+                        {msg.role === "user" ? "You" : "✦ CodeLens AI"}
+                      </div>
+                      <div style={s.chatContent}>
+                        {formatMessage(msg.content)}
+                      </div>
+                    </div>
+                  ))}
+
+                  {chatLoading && (
+                    <div style={{ ...s.chatBubble, ...s.chatBubbleAI }}>
+                      <div style={s.chatLabelAI}>✦ CodeLens AI</div>
+                      <div style={s.typingIndicator}>
+                        <span style={s.dot1}>●</span>
+                        <span style={s.dot2}>●</span>
+                        <span style={s.dot3}>●</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div ref={chatBottomRef} />
+                </div>
+
+                {/* Input */}
+                <div style={s.chatInputArea}>
+                  <textarea
+                    ref={chatInputRef}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={handleChatKeyDown}
+                    placeholder={results ? "Ask about your code... (Enter to send)" : "Run analysis first..."}
+                    style={s.chatInputBox}
+                    disabled={chatLoading || !results}
+                    rows={2}
+                  />
+                  <button
+                    onClick={() => sendChatMessage()}
+                    style={{
+                      ...s.chatSendBtn,
+                      opacity: !chatInput.trim() || chatLoading || !results ? 0.4 : 1,
+                    }}
+                    disabled={!chatInput.trim() || chatLoading || !results}
+                  >
+                    ↑
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -396,9 +609,64 @@ export default function CodeLens() {
   );
 }
 
+// ============================================================================
+// Simple message formatter — renders code blocks with distinct styling
+// ============================================================================
+function formatMessage(text) {
+  if (!text) return null;
+
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("```")) {
+      const lines = part.replace(/^```\w*\n?/, "").replace(/```$/, "");
+      return (
+        <pre key={i} style={msgStyle.code}>
+          <code>{lines}</code>
+        </pre>
+      );
+    }
+    // Render inline code
+    const inline = part.split(/(`[^`]+`)/g);
+    return (
+      <span key={i}>
+        {inline.map((chunk, j) => {
+          if (chunk.startsWith("`") && chunk.endsWith("`")) {
+            return <code key={j} style={msgStyle.inlineCode}>{chunk.slice(1, -1)}</code>;
+          }
+          return <span key={j}>{chunk}</span>;
+        })}
+      </span>
+    );
+  });
+}
+
+const msgStyle = {
+  code: {
+    backgroundColor: "#0a0e17",
+    border: "1px solid #1a1f35",
+    borderRadius: 6,
+    padding: "10px 12px",
+    fontSize: 12,
+    lineHeight: 1.6,
+    overflowX: "auto",
+    margin: "8px 0 4px",
+    color: "#a5f3fc",
+    fontFamily: "'JetBrains Mono', monospace",
+    whiteSpace: "pre-wrap",
+  },
+  inlineCode: {
+    backgroundColor: "#1a1f35",
+    padding: "1px 5px",
+    borderRadius: 3,
+    fontSize: 12,
+    color: "#a5f3fc",
+    fontFamily: "'JetBrains Mono', monospace",
+  },
+};
+
 
 // ============================================================================
-// Styles — Terminal-inspired dark theme
+// Styles
 // ============================================================================
 const s = {
   container: {
@@ -429,7 +697,6 @@ const s = {
     display: "flex",
     flexDirection: "column",
   },
-  // Header
   header: {
     display: "flex",
     alignItems: "center",
@@ -451,11 +718,7 @@ const s = {
     alignItems: "center",
     justifyContent: "center",
   },
-  logoSlash: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: 700,
-  },
+  logoSlash: { color: "#fff", fontSize: 15, fontWeight: 700 },
   logoText: {
     fontSize: 20,
     fontWeight: 700,
@@ -464,16 +727,8 @@ const s = {
     letterSpacing: "-0.5px",
     fontFamily: "'JetBrains Mono', monospace",
   },
-  logoSub: {
-    fontSize: 11,
-    color: "#64748b",
-    margin: 0,
-    letterSpacing: "0.5px",
-  },
-  langPicker: {
-    display: "flex",
-    gap: 6,
-  },
+  logoSub: { fontSize: 11, color: "#64748b", margin: 0, letterSpacing: "0.5px" },
+  langPicker: { display: "flex", gap: 6 },
   langBtn: {
     padding: "8px 14px",
     borderRadius: 8,
@@ -495,7 +750,6 @@ const s = {
   },
   langIcon: { fontSize: 14 },
 
-  // Main layout
   main: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -521,8 +775,9 @@ const s = {
     padding: "10px 14px",
     borderBottom: "1px solid #1a1f35",
     backgroundColor: "#0f1424",
+    flexShrink: 0,
   },
-  tabRow: { display: "flex", gap: 4 },
+  tabRow: { display: "flex", gap: 4, alignItems: "center" },
   tab: {
     padding: "6px 12px",
     borderRadius: 6,
@@ -532,10 +787,18 @@ const s = {
     fontSize: 12,
     cursor: "pointer",
     fontFamily: "inherit",
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
   },
-  tabActive: {
-    backgroundColor: "#1a1f35",
-    color: "#e2e8f0",
+  tabActive: { backgroundColor: "#1a1f35", color: "#e2e8f0" },
+  tabBadge: {
+    backgroundColor: "#ff555520",
+    color: "#ff5555",
+    fontSize: 10,
+    padding: "1px 5px",
+    borderRadius: 3,
+    fontWeight: 700,
   },
   analyzeBtn: {
     padding: "8px 18px",
@@ -551,11 +814,7 @@ const s = {
     alignItems: "center",
     letterSpacing: "0.3px",
   },
-  spinner: {
-    display: "inline-block",
-    animation: "spin 1s linear infinite",
-    fontSize: 16,
-  },
+  spinner: { display: "inline-block", fontSize: 16 },
   editorContainer: {
     display: "flex",
     flex: 1,
@@ -570,6 +829,7 @@ const s = {
     minWidth: 56,
     backgroundColor: "#0b0f1a",
     borderRight: "1px solid #1a1f35",
+    flexShrink: 0,
   },
   lineNum: {
     padding: "0 10px 0 6px",
@@ -595,11 +855,7 @@ const s = {
   },
 
   // History
-  historyList: {
-    flex: 1,
-    overflowY: "auto",
-    padding: 14,
-  },
+  historyList: { flex: 1, overflowY: "auto", padding: 14 },
   historyItem: {
     padding: "12px 14px",
     backgroundColor: "#111628",
@@ -607,25 +863,14 @@ const s = {
     marginBottom: 8,
     border: "1px solid #1a1f35",
   },
-  historyMeta: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginBottom: 6,
-  },
+  historyMeta: { display: "flex", justifyContent: "space-between", marginBottom: 6 },
   historyLang: { fontSize: 12, color: "#8b5cf6" },
   historyTime: { fontSize: 11, color: "#475569" },
   historyPreview: {
-    fontSize: 11,
-    color: "#94a3b8",
-    margin: "0 0 6px",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
+    fontSize: 11, color: "#94a3b8", margin: "0 0 6px",
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
   },
-  historyIssues: {
-    fontSize: 11,
-    color: "#64748b",
-  },
+  historyIssues: { fontSize: 11, color: "#64748b" },
 
   // Results panel
   resultsPanel: {
@@ -636,155 +881,184 @@ const s = {
     border: "1px solid #1a1f35",
     overflow: "hidden",
   },
-  panelTitle: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#e2e8f0",
-  },
   summaryBadges: { display: "flex", gap: 6 },
-  badge: {
-    padding: "3px 8px",
-    borderRadius: 4,
-    fontSize: 11,
-    fontWeight: 600,
-    fontFamily: "inherit",
-  },
+  badge: { padding: "3px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, fontFamily: "inherit" },
   badgeError: { backgroundColor: "#ff555520", color: "#ff5555" },
   badgeWarn: { backgroundColor: "#ffb86c20", color: "#ffb86c" },
   badgeInfo: { backgroundColor: "#8be9fd20", color: "#8be9fd" },
 
-  resultsContent: {
-    flex: 1,
-    overflowY: "auto",
-    padding: 14,
-  },
+  resultsContent: { flex: 1, overflowY: "auto", padding: 14 },
 
-  // Empty state
   emptyState: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    height: "100%",
-    minHeight: 300,
-    textAlign: "center",
-    padding: 40,
+    display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", height: "100%", minHeight: 300,
+    textAlign: "center", padding: 40,
   },
-  emptyIcon: {
-    fontSize: 40,
-    color: "#2d3154",
-    marginBottom: 16,
-  },
-  successIcon: {
-    fontSize: 48,
-    color: "#10b981",
-    marginBottom: 16,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: 600,
-    color: "#94a3b8",
-    margin: "0 0 8px",
-  },
-  emptyDesc: {
-    fontSize: 13,
-    color: "#475569",
-    maxWidth: 320,
-    lineHeight: 1.6,
-    margin: 0,
-  },
-  emptyText: {
-    color: "#475569",
-    fontSize: 13,
-    textAlign: "center",
-    padding: 40,
-  },
+  emptyIcon: { fontSize: 40, color: "#2d3154", marginBottom: 16 },
+  successIcon: { fontSize: 48, color: "#10b981", marginBottom: 16 },
+  emptyTitle: { fontSize: 16, fontWeight: 600, color: "#94a3b8", margin: "0 0 8px" },
+  emptyDesc: { fontSize: 13, color: "#475569", maxWidth: 320, lineHeight: 1.6, margin: "0 0 16px" },
+  emptyText: { color: "#475569", fontSize: 13, textAlign: "center", padding: 40 },
   errorState: {
-    padding: 20,
-    backgroundColor: "#ff555510",
+    padding: 20, backgroundColor: "#ff555510", borderRadius: 8, border: "1px solid #ff555530",
+  },
+  errorText: { color: "#ff5555", fontSize: 13, margin: 0 },
+
+  switchToChatBtn: {
+    padding: "8px 16px",
     borderRadius: 8,
-    border: "1px solid #ff555530",
-  },
-  errorText: {
-    color: "#ff5555",
-    fontSize: 13,
-    margin: 0,
-  },
-
-  // Issues
-  issuesList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  issueCard: {
-    backgroundColor: "#111628",
-    borderRadius: 10,
-    padding: "14px 16px",
-    borderLeft: "3px solid",
-    transition: "transform 0.1s",
-  },
-  issueHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
-  severityTag: {
-    padding: "2px 8px",
-    borderRadius: 4,
-    fontSize: 11,
-    fontWeight: 700,
-    fontFamily: "inherit",
-    letterSpacing: "0.3px",
-  },
-  lineTag: {
-    fontSize: 11,
-    color: "#64748b",
-    fontFamily: "inherit",
-  },
-  categoryTag: {
-    fontSize: 10,
-    color: "#475569",
-    backgroundColor: "#1a1f35",
-    padding: "2px 6px",
-    borderRadius: 3,
-    textTransform: "uppercase",
-    letterSpacing: "0.5px",
-  },
-  issueMessage: {
-    fontSize: 13,
-    color: "#e2e8f0",
-    margin: "0 0 10px",
-    lineHeight: 1.5,
-  },
-  suggestionBox: {
-    backgroundColor: "#0d1120",
-    borderRadius: 6,
-    padding: "10px 12px",
-    border: "1px solid #1a1f35",
-  },
-  suggestionLabel: {
-    fontSize: 11,
-    fontWeight: 600,
-    marginBottom: 4,
-    display: "block",
-  },
-  suggestionText: {
+    border: "1px solid #6366f140",
+    backgroundColor: "#6366f115",
+    color: "#818cf8",
     fontSize: 12,
-    color: "#94a3b8",
-    margin: 0,
-    lineHeight: 1.5,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    marginTop: 4,
   },
 
-  // Summary footer
+  issuesList: { display: "flex", flexDirection: "column", gap: 10 },
+  issueCard: {
+    backgroundColor: "#111628", borderRadius: 10,
+    padding: "14px 16px", borderLeft: "3px solid",
+  },
+  issueHeader: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 },
+  severityTag: {
+    padding: "2px 8px", borderRadius: 4, fontSize: 11,
+    fontWeight: 700, fontFamily: "inherit", letterSpacing: "0.3px",
+  },
+  lineTag: { fontSize: 11, color: "#64748b", fontFamily: "inherit" },
+  categoryTag: {
+    fontSize: 10, color: "#475569", backgroundColor: "#1a1f35",
+    padding: "2px 6px", borderRadius: 3, textTransform: "uppercase", letterSpacing: "0.5px",
+  },
+  issueMessage: { fontSize: 13, color: "#e2e8f0", margin: "0 0 10px", lineHeight: 1.5 },
+  suggestionBox: {
+    backgroundColor: "#0d1120", borderRadius: 6,
+    padding: "10px 12px", border: "1px solid #1a1f35",
+  },
+  suggestionLabel: { fontSize: 11, fontWeight: 600, marginBottom: 4, display: "block" },
+  suggestionText: { fontSize: 12, color: "#94a3b8", margin: 0, lineHeight: 1.5 },
+
+  // CTA after results
+  chatCta: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    marginTop: 14, padding: "12px 16px",
+    backgroundColor: "#6366f110", borderRadius: 10,
+    border: "1px solid #6366f125",
+  },
+  chatCtaText: { fontSize: 12, color: "#94a3b8", margin: 0 },
+  chatCtaBtn: {
+    padding: "7px 14px", borderRadius: 7,
+    border: "none",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+    color: "#fff", fontSize: 12, fontWeight: 600,
+    cursor: "pointer", fontFamily: "inherit",
+  },
+
   summaryFooter: {
     padding: "10px 14px",
     borderTop: "1px solid #1a1f35",
-    fontSize: 11,
-    color: "#475569",
+    fontSize: 11, color: "#475569",
     backgroundColor: "#0f1424",
-    textAlign: "center",
-    letterSpacing: "0.3px",
+    textAlign: "center", letterSpacing: "0.3px",
+    flexShrink: 0,
+  },
+
+  // ---- Chat panel ----
+  chatPanel: {
+    display: "flex", flexDirection: "column", flex: 1, overflow: "hidden",
+  },
+  chatMessages: {
+    flex: 1, overflowY: "auto", padding: "14px 14px 8px",
+    display: "flex", flexDirection: "column", gap: 12,
+  },
+  chatEmpty: {
+    display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", flex: 1, textAlign: "center", padding: 24, minHeight: 280,
+  },
+  chatEmptyIcon: { fontSize: 32, color: "#6366f1", marginBottom: 12 },
+  chatEmptyTitle: { fontSize: 15, fontWeight: 600, color: "#94a3b8", margin: "0 0 8px" },
+  chatEmptyDesc: { fontSize: 12, color: "#475569", maxWidth: 280, lineHeight: 1.6, margin: "0 0 20px" },
+
+  quickPrompts: {
+    display: "flex", flexDirection: "column", gap: 6, width: "100%", maxWidth: 280,
+  },
+  quickPromptBtn: {
+    padding: "8px 14px",
+    borderRadius: 8,
+    border: "1px solid #1a1f35",
+    backgroundColor: "#111628",
+    color: "#94a3b8",
+    fontSize: 12,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    textAlign: "left",
+    transition: "all 0.15s",
+  },
+
+  chatBubble: {
+    maxWidth: "90%", padding: "10px 14px",
+    borderRadius: 10, lineHeight: 1.6, fontSize: 13,
+  },
+  chatBubbleUser: {
+    backgroundColor: "#1a1f35",
+    color: "#e2e8f0",
+    alignSelf: "flex-end",
+    borderBottomRightRadius: 3,
+  },
+  chatBubbleAI: {
+    backgroundColor: "#111628",
+    color: "#cbd5e1",
+    alignSelf: "flex-start",
+    border: "1px solid #1a1f35",
+    borderBottomLeftRadius: 3,
+  },
+  chatLabelUser: {
+    fontSize: 10, color: "#6366f1", fontWeight: 700,
+    marginBottom: 4, letterSpacing: "0.5px",
+  },
+  chatLabelAI: {
+    fontSize: 10, color: "#8b5cf6", fontWeight: 700,
+    marginBottom: 4, letterSpacing: "0.5px",
+  },
+  chatContent: { whiteSpace: "pre-wrap", wordBreak: "break-word" },
+
+  // Typing dots
+  typingIndicator: { display: "flex", gap: 4, alignItems: "center", padding: "4px 0" },
+  dot1: { fontSize: 8, color: "#6366f1", animation: "pulse 1.2s ease-in-out 0s infinite" },
+  dot2: { fontSize: 8, color: "#6366f1", animation: "pulse 1.2s ease-in-out 0.2s infinite" },
+  dot3: { fontSize: 8, color: "#6366f1", animation: "pulse 1.2s ease-in-out 0.4s infinite" },
+
+  chatInputArea: {
+    display: "flex", gap: 8, padding: "10px 14px 14px",
+    borderTop: "1px solid #1a1f35",
+    backgroundColor: "#0f1424",
+    flexShrink: 0,
+    alignItems: "flex-end",
+  },
+  chatInputBox: {
+    flex: 1,
+    backgroundColor: "#111628",
+    border: "1px solid #1a1f35",
+    borderRadius: 10,
+    color: "#e2e8f0",
+    fontSize: 13,
+    fontFamily: "inherit",
+    padding: "10px 14px",
+    outline: "none",
+    resize: "none",
+    lineHeight: 1.5,
+  },
+  chatSendBtn: {
+    width: 38, height: 38,
+    borderRadius: 10,
+    border: "none",
+    background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+    color: "#fff",
+    fontSize: 18,
+    cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    flexShrink: 0,
+    transition: "opacity 0.15s",
   },
 };

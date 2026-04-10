@@ -8,6 +8,7 @@ Analysis methods:
   - AST parsing (Python)
   - Pattern-based detection (all languages)
   - Common bug pattern matching
+  - AI-powered deep analysis + chat (Anthropic API)
 """
 
 from flask import Flask, request, jsonify
@@ -17,9 +18,13 @@ import re
 import traceback
 import json
 from datetime import datetime
+import anthropic
 
 app = Flask(__name__)
 CORS(app)
+
+# Anthropic client
+ai_client = anthropic.Anthropic()
 
 # In-memory storage for analysis history
 analysis_history = []
@@ -33,23 +38,16 @@ def detect_language(code):
     """Auto-detect programming language from code content."""
     code_lower = code.strip().lower()
 
-    # Python indicators
     if any(kw in code for kw in ['def ', 'import ', 'print(', 'elif ', 'self.', '__init__']):
         return 'python'
-
-    # Java indicators
     if any(kw in code for kw in ['public static void', 'System.out', 'public class', 'private ', 'String[]']):
         return 'java'
-
-    # C++ indicators
-    if any(kw in code for kw in ['#include', 'cout', 'cin', 'std::', 'nullptr', '->',  'int main()']):
+    if any(kw in code for kw in ['#include', 'cout', 'cin', 'std::', 'nullptr', '->', 'int main()']):
         return 'cpp'
-
-    # JavaScript indicators
     if any(kw in code for kw in ['const ', 'let ', 'var ', '=>', 'console.log', 'function ', 'document.']):
         return 'javascript'
 
-    return 'python'  # default fallback
+    return 'python'
 
 
 # ============================================================================
@@ -71,7 +69,7 @@ class PythonAnalyzer:
 
     def _add_issue(self, severity, line, message, suggestion, category="bug"):
         self.issues.append({
-            'severity': severity,       # error, warning, info
+            'severity': severity,
             'line': line,
             'message': message,
             'suggestion': suggestion,
@@ -79,7 +77,6 @@ class PythonAnalyzer:
         })
 
     def _check_syntax(self):
-        """Try to parse the AST — catch syntax errors."""
         try:
             tree = ast.parse(self.code)
             self._analyze_ast(tree)
@@ -92,9 +89,7 @@ class PythonAnalyzer:
             )
 
     def _analyze_ast(self, tree):
-        """Walk the AST looking for common issues."""
         for node in ast.walk(tree):
-            # Bare except clause
             if isinstance(node, ast.ExceptHandler) and node.type is None:
                 self._add_issue(
                     'warning', node.lineno,
@@ -103,7 +98,6 @@ class PythonAnalyzer:
                     "best_practice"
                 )
 
-            # Mutable default arguments
             if isinstance(node, ast.FunctionDef):
                 for default in node.args.defaults:
                     if isinstance(default, (ast.List, ast.Dict, ast.Set)):
@@ -114,7 +108,6 @@ class PythonAnalyzer:
                             "bug"
                         )
 
-                # Check for unused variables in function
                 assigned = set()
                 used = set()
                 for child in ast.walk(node):
@@ -134,7 +127,6 @@ class PythonAnalyzer:
                         "style"
                     )
 
-            # Comparison to None using == instead of is
             if isinstance(node, ast.Compare):
                 for op, comparator in zip(node.ops, node.comparators):
                     if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(comparator, ast.Constant) and comparator.value is None:
@@ -145,9 +137,7 @@ class PythonAnalyzer:
                             "style"
                         )
 
-            # Using 'type()' for type checking
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'type':
-                # Check if it's in a comparison
                 self._add_issue(
                     'info', node.lineno,
                     "Using type() for type checking. isinstance() is usually preferred.",
@@ -156,18 +146,15 @@ class PythonAnalyzer:
                 )
 
     def _check_common_bugs(self):
-        """Pattern-based bug detection."""
         for i, line in enumerate(self.lines, 1):
             stripped = line.strip()
 
-            # Division by zero risk
             if re.search(r'/\s*0\b', stripped) and not stripped.startswith('#'):
                 self._add_issue('error', i,
                     "Potential division by zero.",
                     "Add a check before dividing: if divisor != 0: result = x / divisor",
                     "bug")
 
-            # Using 'is' to compare values (not identity)
             match = re.search(r'\bis\s+(\d+)', stripped)
             if match and not stripped.startswith('#'):
                 self._add_issue('warning', i,
@@ -175,9 +162,7 @@ class PythonAnalyzer:
                     "Use '==' for value comparison. 'is' only works reliably for None, True, False.",
                     "bug")
 
-            # Infinite loop risk
             if stripped == 'while True:':
-                # Check if there's a break in the next few lines
                 has_break = any('break' in self.lines[j] for j in range(i, min(i + 20, len(self.lines))))
                 if not has_break:
                     self._add_issue('warning', i,
@@ -185,14 +170,12 @@ class PythonAnalyzer:
                         "Add a break condition or use a bounded loop like 'while condition:'",
                         "bug")
 
-            # String concatenation in loop
             if re.search(r'\+\s*=.*["\']', stripped) and any('for ' in self.lines[j] for j in range(max(0, i-5), i)):
                 self._add_issue('info', i,
                     "String concatenation with += in a loop is inefficient in Python.",
                     "Use a list and ''.join() for better performance: parts.append(s); result = ''.join(parts)",
                     "performance")
 
-            # Global variable usage
             if stripped.startswith('global '):
                 self._add_issue('info', i,
                     "Using global variables can make code harder to test and debug.",
@@ -200,23 +183,19 @@ class PythonAnalyzer:
                     "best_practice")
 
     def _check_style(self):
-        """Check style and formatting issues."""
         for i, line in enumerate(self.lines, 1):
-            # Line too long
             if len(line) > 120:
                 self._add_issue('info', i,
                     f"Line is {len(line)} characters long (PEP 8 recommends max 79-120).",
                     "Break the line into multiple lines for readability.",
                     "style")
 
-            # Trailing whitespace
             if line != line.rstrip() and line.strip():
                 self._add_issue('info', i,
                     "Trailing whitespace detected.",
                     "Remove trailing spaces at the end of the line.",
                     "style")
 
-            # Mixed tabs and spaces
             if '\t' in line and '    ' in line:
                 self._add_issue('warning', i,
                     "Mixed tabs and spaces for indentation.",
@@ -224,27 +203,23 @@ class PythonAnalyzer:
                     "style")
 
     def _check_best_practices(self):
-        """Check for Python best practice violations."""
         full_code = self.code
 
-        # Using print for debugging (in functions)
         if 'def ' in full_code:
             for i, line in enumerate(self.lines, 1):
                 if re.match(r'\s+print\(', line) and not line.strip().startswith('#'):
-                    # Check if it looks like debug output
                     if any(kw in line.lower() for kw in ['debug', 'test', 'here', 'xxx', 'todo']):
                         self._add_issue('info', i,
                             "Debug print statement found. Consider using logging instead.",
                             "import logging; logging.debug() for debug output that can be toggled.",
                             "best_practice")
 
-        # Missing docstrings on functions
         try:
             tree = ast.parse(self.code)
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef):
                     if not (node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)):
-                        if len(node.body) > 3:  # Only flag substantial functions
+                        if len(node.body) > 3:
                             self._add_issue('info', node.lineno,
                                 f"Function '{node.name}' has no docstring.",
                                 f"Add a docstring: def {node.name}(...):\n    \"\"\"Description of what this function does.\"\"\"",
@@ -281,28 +256,24 @@ class JavaScriptAnalyzer:
         for i, line in enumerate(self.lines, 1):
             stripped = line.strip()
 
-            # Using var instead of let/const
             if re.match(r'\bvar\s+', stripped):
                 self._add_issue('warning', i,
                     "'var' has function-scoping issues and is hoisted unexpectedly.",
                     "Use 'let' for variables that change, or 'const' for constants.",
                     "best_practice")
 
-            # == instead of ===
             if re.search(r'[^=!]==[^=]', stripped) and not stripped.startswith('//'):
                 self._add_issue('warning', i,
                     "Using '==' (loose equality) which performs type coercion.",
                     "Use '===' (strict equality) to avoid unexpected type coercion bugs.",
                     "bug")
 
-            # != instead of !==
             if re.search(r'!=[^=]', stripped) and not stripped.startswith('//'):
                 self._add_issue('warning', i,
                     "Using '!=' (loose inequality) which performs type coercion.",
                     "Use '!==' (strict inequality) for safer comparisons.",
                     "bug")
 
-            # Missing semicolons (basic check)
             if stripped and not stripped.startswith('//') and not stripped.startswith('/*'):
                 if stripped.endswith(')') or (re.match(r'^(let|const|var|return)\s', stripped) and not stripped.endswith(';') and not stripped.endswith('{')):
                     if not any(stripped.endswith(c) for c in ['{', '}', '(', ',', '=>']):
@@ -311,14 +282,12 @@ class JavaScriptAnalyzer:
                             "Add a semicolon at the end of the statement for consistency.",
                             "style")
 
-            # Console.log in production code
             if 'console.log' in stripped and not stripped.startswith('//'):
                 self._add_issue('info', i,
                     "console.log() found — remember to remove debug logging before production.",
                     "Use a proper logging library or remove before deploying.",
                     "best_practice")
 
-            # Callback hell indicator
             indent = len(line) - len(line.lstrip())
             if indent > 24 and ('=>' in stripped or 'function' in stripped):
                 self._add_issue('info', i,
@@ -326,7 +295,6 @@ class JavaScriptAnalyzer:
                     "Consider using async/await or Promise.all() for cleaner async code.",
                     "best_practice")
 
-            # Division by zero
             if re.search(r'/\s*0\b', stripped) and not stripped.startswith('//'):
                 self._add_issue('error', i,
                     "Potential division by zero.",
@@ -366,16 +334,13 @@ class JavaAnalyzer:
         for i, line in enumerate(self.lines, 1):
             stripped = line.strip()
 
-            # String comparison with ==
             if re.search(r'==\s*"', stripped) and 'String' in self.code:
                 self._add_issue('error', i,
                     "Comparing strings with '==' checks reference equality, not content.",
                     "Use .equals() for string comparison: str1.equals(str2)",
                     "bug")
 
-            # Null pointer risk
             if re.search(r'\.length\b|\.size\(\)|\.get\(', stripped):
-                # Check if there's a null check before
                 prev_lines = '\n'.join(self.lines[max(0,i-3):i-1])
                 if 'null' not in prev_lines and 'if' not in prev_lines:
                     self._add_issue('warning', i,
@@ -383,28 +348,24 @@ class JavaAnalyzer:
                         "Add a null check: if (obj != null) { obj.method(); }",
                         "bug")
 
-            # Empty catch block
             if stripped == 'catch' or re.search(r'catch\s*\([^)]*\)\s*\{\s*\}', stripped):
                 self._add_issue('warning', i,
                     "Empty catch block silently swallows exceptions.",
                     "Log the exception or handle it: catch (Exception e) { e.printStackTrace(); }",
                     "bug")
 
-            # System.out.println in production
             if 'System.out.print' in stripped:
                 self._add_issue('info', i,
                     "System.out.println() used — consider using a logging framework.",
                     "Use java.util.logging or SLF4J for configurable logging.",
                     "best_practice")
 
-            # Raw types
             if re.search(r'\bArrayList\s*[^<]|List\s+\w+\s*=\s*new\s+ArrayList\s*\(\)', stripped):
                 self._add_issue('warning', i,
                     "Raw type used without generics — loses type safety.",
                     "Use generics: ArrayList<String> list = new ArrayList<>();",
                     "best_practice")
 
-            # Resource leak
             if re.search(r'new\s+(Scanner|BufferedReader|FileReader|FileWriter|Connection)', stripped):
                 has_try = any('try' in self.lines[j] for j in range(max(0, i-3), i))
                 if not has_try:
@@ -420,7 +381,6 @@ class JavaAnalyzer:
                 self._add_issue('info', i,
                     f"Line is {len(line)} characters long.", "Break into multiple lines.", "style")
 
-            # Class name not capitalized
             match = re.match(r'(public\s+)?class\s+([a-z]\w*)', stripped)
             if match:
                 self._add_issue('warning', i,
@@ -454,7 +414,6 @@ class CppAnalyzer:
         for i, line in enumerate(self.lines, 1):
             stripped = line.strip()
 
-            # Array out of bounds risk
             if re.search(r'\[\s*\w+\s*\]', stripped) and not stripped.startswith('//'):
                 if 'for' in '\n'.join(self.lines[max(0,i-3):i]):
                     self._add_issue('info', i,
@@ -462,21 +421,18 @@ class CppAnalyzer:
                         "Use .at() for bounds-checked access or verify index < size.",
                         "bug")
 
-            # Memory leak: new without delete
             if re.search(r'\bnew\s+\w+', stripped) and not stripped.startswith('//'):
                 self._add_issue('warning', i,
                     "Dynamic allocation with 'new' — ensure matching delete or use smart pointers.",
                     "Use std::unique_ptr or std::shared_ptr instead of raw new/delete.",
                     "bug")
 
-            # Using namespace std
             if stripped == 'using namespace std;':
                 self._add_issue('warning', i,
                     "'using namespace std;' can cause name collisions in larger projects.",
                     "Use specific imports: using std::cout; using std::string; or prefix with std::",
                     "best_practice")
 
-            # Uninitialized variables
             match = re.match(r'\s*(int|float|double|char|bool)\s+(\w+)\s*;', stripped)
             if match and '=' not in stripped:
                 self._add_issue('warning', i,
@@ -484,21 +440,18 @@ class CppAnalyzer:
                     f"Initialize on declaration: {match.group(1)} {match.group(2)} = 0;",
                     "bug")
 
-            # Division by zero
             if re.search(r'/\s*0\b', stripped) and not stripped.startswith('//'):
                 self._add_issue('error', i,
                     "Potential division by zero — undefined behavior in C++.",
                     "Add a zero check before dividing.",
                     "bug")
 
-            # gets() usage (buffer overflow)
             if 'gets(' in stripped:
                 self._add_issue('error', i,
                     "gets() is vulnerable to buffer overflow and was removed in C++14.",
                     "Use std::getline(std::cin, str) or fgets() instead.",
                     "security")
 
-            # Magic numbers
             if re.search(r'[=<>]\s*\d{2,}', stripped) and not stripped.startswith('//') and '#define' not in stripped:
                 self._add_issue('info', i,
                     "Magic number detected — unnamed numeric constants reduce readability.",
@@ -517,7 +470,7 @@ class CppAnalyzer:
 # ============================================================================
 
 def analyze_code(code, language=None):
-    """Run analysis on the provided code."""
+    """Run static analysis on the provided code."""
     if not language:
         language = detect_language(code)
 
@@ -532,11 +485,9 @@ def analyze_code(code, language=None):
     analyzer = analyzer_class(code)
     issues = analyzer.analyze()
 
-    # Sort by severity: errors first, then warnings, then info
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
     issues.sort(key=lambda x: (severity_order.get(x['severity'], 3), x['line']))
 
-    # Summary stats
     summary = {
         'total_issues': len(issues),
         'errors': sum(1 for i in issues if i['severity'] == 'error'),
@@ -547,6 +498,41 @@ def analyze_code(code, language=None):
     }
 
     return {'issues': issues, 'summary': summary}
+
+
+# ============================================================================
+# AI Chat Helper
+# ============================================================================
+
+def build_system_prompt(code, language, issues):
+    """Build the system prompt with full code context for the AI."""
+    issues_summary = ""
+    if issues:
+        issues_summary = "\n".join([
+            f"- Line {i['line']} [{i['severity'].upper()}] {i['message']}"
+            for i in issues[:20]  # cap at 20 to avoid token bloat
+        ])
+    else:
+        issues_summary = "No issues detected by static analysis."
+
+    return f"""You are CodeLens AI, an expert code reviewer embedded in a debugging tool.
+
+The user is working with the following {language} code:
+
+```{language}
+{code}
+```
+
+Static analysis already found these issues:
+{issues_summary}
+
+Your job:
+- Answer the user's questions about their specific code
+- Explain bugs clearly, as if talking to a developer who wants to understand, not just copy a fix
+- If asked to fix code, provide the corrected version with a brief explanation of what changed and why
+- Be concise and direct — no filler, no unnecessary disclaimers
+- Reference specific line numbers when relevant
+- You have full context of the code above, so never ask the user to paste it again"""
 
 
 # ============================================================================
@@ -561,11 +547,10 @@ def api_analyze():
         return jsonify({'error': 'No code provided'}), 400
 
     code = data['code']
-    language = data.get('language')  # optional, auto-detects if not provided
+    language = data.get('language')
 
     result = analyze_code(code, language)
 
-    # Save to history
     analysis_history.append({
         'id': len(analysis_history) + 1,
         'code_preview': code[:100] + ('...' if len(code) > 100 else ''),
@@ -577,15 +562,69 @@ def api_analyze():
     return jsonify(result)
 
 
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    """
+    AI chat endpoint. Accepts:
+      - code: the current code in the editor
+      - language: detected/selected language
+      - issues: list of static analysis issues already found
+      - messages: conversation history [{ role, content }, ...]
+      - message: the new user message
+
+    Returns:
+      - reply: AI response string
+    """
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    code = data.get('code', '')
+    language = data.get('language', 'python')
+    issues = data.get('issues', [])
+    history = data.get('messages', [])  # prior conversation turns
+    user_message = data.get('message', '').strip()
+
+    if not user_message:
+        return jsonify({'error': 'No message provided'}), 400
+
+    if not code:
+        return jsonify({'error': 'No code provided'}), 400
+
+    # Build messages array: history + new user message
+    messages = history + [{"role": "user", "content": user_message}]
+
+    try:
+        response = ai_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1000,
+            system=build_system_prompt(code, language, issues),
+            messages=messages,
+        )
+
+        reply = response.content[0].text
+
+        return jsonify({
+            'reply': reply,
+            'usage': {
+                'input_tokens': response.usage.input_tokens,
+                'output_tokens': response.usage.output_tokens,
+            }
+        })
+
+    except anthropic.APIError as e:
+        return jsonify({'error': f'AI service error: {str(e)}'}), 500
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
 @app.route('/api/history', methods=['GET'])
 def api_history():
-    """Get analysis history."""
-    return jsonify(list(reversed(analysis_history[-50:])))  # last 50
+    return jsonify(list(reversed(analysis_history[-50:])))
 
 
 @app.route('/api/languages', methods=['GET'])
 def api_languages():
-    """Get supported languages."""
     return jsonify({
         'languages': [
             {'id': 'python', 'name': 'Python', 'icon': '🐍'},
