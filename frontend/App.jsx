@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const API = "http://localhost:5000/api";
+const API = "https://codelens-debugger.onrender.com/api";
 
 const LANGUAGES = [
   { id: "python", name: "Python", icon: "🐍" },
