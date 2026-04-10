@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 CodeLens Debugger — Flask Backend
 ==================================
