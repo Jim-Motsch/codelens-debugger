@@ -6,12 +6,15 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 export const supabase = createClient(supabaseUrl, supabaseKey)
 
 export async function checkSubscription(email) {
+  console.log('Checking subscription for:', email)
   const { data, error } = await supabase
     .from('subscriptions')
     .select('status')
     .eq('email', email)
     .eq('status', 'active')
+    .single()
   
-  if (error || !data || data.length === 0) return false
+  console.log('Subscription result:', data, error)
+  if (error || !data) return false
   return true
 }
