@@ -11,8 +11,7 @@ export async function checkSubscription(email) {
     .select('status')
     .eq('email', email)
     .eq('status', 'active')
-    .single()
   
-  if (error || !data) return false
+  if (error || !data || data.length === 0) return false
   return true
 }
