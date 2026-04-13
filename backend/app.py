@@ -691,5 +691,23 @@ def webhook():
                 print(f"Supabase error: {e}")
 
     return jsonify({'success': True})
+@app.route('/api/check-subscription', methods=['POST'])
+def check_subscription():
+    data = request.json
+    email = data.get('email', '')
+    if not email:
+        return jsonify({'pro': False})
+    
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.environ.get('SUPABASE_URL'),
+            os.environ.get('SUPABASE_SERVICE_KEY')
+        )
+        result = sb.table('subscriptions').select('status').eq('email', email).eq('status', 'active').execute()
+        return jsonify({'pro': len(result.data) > 0})
+    except Exception as e:
+        print(f"Subscription check error: {e}")
+        return jsonify({'pro': False})
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
