@@ -645,28 +645,42 @@ def health():
 @app.route('/api/webhook', methods=['POST'])
 def webhook():
     """Handle Lemon Squeezy webhook for subscription events."""
+    # Verify webhook signature
+    secret = os.environ.get('LEMON_SQUEEZY_SECRET', '')
+    signature = request.headers.get('X-Signature', '')
+    
+    raw_body = request.get_data()
+    
+    import hmac
+    import hashlib
+    expected = hmac.new(
+        secret.encode('utf-8'),
+        raw_body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    if signature != expected:
+        return jsonify({'error': 'Invalid signature'}), 401
+
     data = request.json
     if not data:
         return jsonify({'error': 'No data'}), 400
 
     event_name = data.get('meta', {}).get('event_name', '')
     attrs = data.get('data', {}).get('attributes', {})
-    
-    # Only handle successful subscription created/updated events
+
     if event_name in ['subscription_created', 'subscription_updated']:
         email = attrs.get('user_email', '')
         status = attrs.get('status', '')
         lemon_id = str(data.get('data', {}).get('id', ''))
 
         if email and status == 'active':
-            # Save to Supabase
             try:
                 from supabase import create_client
                 sb = create_client(
                     os.environ.get('SUPABASE_URL'),
                     os.environ.get('SUPABASE_SERVICE_KEY')
                 )
-                # Check if subscription already exists
                 existing = sb.table('subscriptions').select('id').eq('email', email).execute()
                 if existing.data:
                     sb.table('subscriptions').update({'status': status, 'lemon_squeezy_id': lemon_id}).eq('email', email).execute()
