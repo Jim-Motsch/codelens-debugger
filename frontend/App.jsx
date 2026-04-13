@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "./supabase";
+import { supabase, checkSubscription } from "./supabase";
 
 const API = "https://codelens-debugger.onrender.com/api";
 const CHECKOUT_URL = "https://codelensai.lemonsqueezy.com/checkout/buy/ce4a0d77-c2ef-4bf3-8ecf-ce76664c2667";
@@ -210,6 +210,7 @@ export default function CodeLens() {
   const [rightTab, setRightTab] = useState("results");
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [chatCount, setChatCount] = useState(0);
+  const [isPro, setIsPro] = useState(false);
   const textareaRef = useRef(null);
   const lineNumbersRef = useRef(null);
   const chatBottomRef = useRef(null);
@@ -225,8 +226,12 @@ export default function CodeLens() {
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => { if (user) fetchHistory(); }, [user]);
-  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
+useEffect(() => {
+  if (user) {
+    fetchHistory();
+    checkSubscription(user.email).then(pro => setIsPro(pro));
+  }
+}, [user]);  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
 
   async function fetchHistory() {
     try {
@@ -278,8 +283,7 @@ export default function CodeLens() {
   async function handleSignOut() { await supabase.auth.signOut(); setUser(null); }
 
   const remainingChats = FREE_CHAT_LIMIT - chatCount;
-  const atLimit = chatCount >= FREE_CHAT_LIMIT;
-
+  const atLimit = !isPro && chatCount >= FREE_CHAT_LIMIT;
   if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
   if (!user) return <AuthScreen onAuth={setUser} />;
 
