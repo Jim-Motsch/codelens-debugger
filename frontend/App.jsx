@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabase";
 
 const API = "https://codelens-debugger.onrender.com/api";
+const CHECKOUT_URL = "https://codelensai.lemonsqueezy.com/checkout/buy/ce4a0d77-c2ef-4bf3-8ecf-ce76664c2667";
+const FREE_CHAT_LIMIT = 3;
 
 const LANGUAGES = [
   { id: "python", name: "Python", icon: "🐍" },
@@ -99,6 +101,34 @@ const QUICK_PROMPTS = [
   "Rewrite this code cleanly",
 ];
 
+function UpgradeModal({ onClose }) {
+  return (
+    <div style={m.overlay}>
+      <div style={m.modal}>
+        <div style={m.modalHeader}>
+          <div style={m.sparkle}>✦</div>
+          <h2 style={m.modalTitle}>Upgrade to CodeLens Pro</h2>
+          <p style={m.modalSub}>You've used your 3 free AI messages</p>
+        </div>
+        <div style={m.features}>
+          {["Unlimited AI chat messages","AI-powered deep code analysis","Fix entire files with one click","Priority support"].map(f => (
+            <div key={f} style={m.feature}>
+              <span style={m.featureCheck}>✓</span>
+              <span style={m.featureText}>{f}</span>
+            </div>
+          ))}
+        </div>
+        <div style={m.pricing}>
+          <span style={m.price}>$9.99</span>
+          <span style={m.pricePer}>/month</span>
+        </div>
+        <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={m.upgradeBtn}>Upgrade Now</button>
+        <button onClick={onClose} style={m.dismissBtn}>Maybe later</button>
+      </div>
+    </div>
+  );
+}
+
 function AuthScreen({ onAuth }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -178,6 +208,8 @@ export default function CodeLens() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [rightTab, setRightTab] = useState("results");
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [chatCount, setChatCount] = useState(0);
   const textareaRef = useRef(null);
   const lineNumbersRef = useRef(null);
   const chatBottomRef = useRef(null);
@@ -194,10 +226,7 @@ export default function CodeLens() {
   }, []);
 
   useEffect(() => { if (user) fetchHistory(); }, [user]);
-
-  useEffect(() => {
-    if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages, chatLoading]);
+  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
 
   async function fetchHistory() {
     try {
@@ -212,11 +241,7 @@ export default function CodeLens() {
     setLoading(true);
     setChatMessages([]);
     try {
-      const res = await fetch(`${API}/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, language }),
-      });
+      const res = await fetch(`${API}/analyze`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, language }) });
       const data = await res.json();
       setResults(data);
       fetchHistory();
@@ -230,46 +255,32 @@ export default function CodeLens() {
   async function sendChatMessage(messageText) {
     const msg = messageText || chatInput.trim();
     if (!msg || chatLoading || !results || results.error) return;
+    if (chatCount >= FREE_CHAT_LIMIT) { setShowUpgrade(true); return; }
     const updatedMessages = [...chatMessages, { role: "user", content: msg }];
     setChatMessages(updatedMessages);
     setChatInput("");
     setChatLoading(true);
+    const newCount = chatCount + 1;
+    setChatCount(newCount);
     try {
-      const res = await fetch(`${API}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, language, issues: results?.issues || [], messages: chatMessages, message: msg }),
-      });
+      const res = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, language, issues: results?.issues || [], messages: chatMessages, message: msg }) });
       const data = await res.json();
       setChatMessages(prev => [...prev, { role: "assistant", content: data.error ? `Error: ${data.error}` : data.reply }]);
     } catch (e) {
       setChatMessages(prev => [...prev, { role: "assistant", content: "Failed to reach the server." }]);
     }
     setChatLoading(false);
+    if (newCount >= FREE_CHAT_LIMIT) setTimeout(() => setShowUpgrade(true), 1500);
   }
 
-  function handleLanguageChange(lang) {
-    setLanguage(lang);
-    setCode(SAMPLE_CODE[lang] || "");
-    setResults(null);
-    setChatMessages([]);
-  }
+  function handleLanguageChange(lang) { setLanguage(lang); setCode(SAMPLE_CODE[lang] || ""); setResults(null); setChatMessages([]); }
+  function syncScroll() { if (lineNumbersRef.current && textareaRef.current) lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop; }
+  async function handleSignOut() { await supabase.auth.signOut(); setUser(null); }
 
-  function syncScroll() {
-    if (lineNumbersRef.current && textareaRef.current) lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
-  }
+  const remainingChats = FREE_CHAT_LIMIT - chatCount;
+  const atLimit = chatCount >= FREE_CHAT_LIMIT;
 
-  async function handleSignOut() {
-    await supabase.auth.signOut();
-    setUser(null);
-  }
-
-  if (authLoading) return (
-    <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p>
-    </div>
-  );
-
+  if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
   if (!user) return <AuthScreen onAuth={setUser} />;
 
   const lines = code.split("\n");
@@ -277,25 +288,24 @@ export default function CodeLens() {
 
   return (
     <div style={s.container}>
+      {showUpgrade && <UpgradeModal onClose={() => setShowUpgrade(false)} />}
       <div style={s.bgGrid} />
       <div style={s.app}>
         <header style={s.header}>
           <div style={s.headerLeft}>
             <div style={s.logoMark}><span style={s.logoSlash}>&lt;/&gt;</span></div>
-            <div>
-              <h1 style={s.logoText}>CodeLens</h1>
-              <p style={s.logoSub}>Static Analysis + AI Debugger</p>
-            </div>
+            <div><h1 style={s.logoText}>CodeLens</h1><p style={s.logoSub}>Static Analysis + AI Debugger</p></div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={s.langPicker}>
-              {LANGUAGES.map((lang) => (
+              {LANGUAGES.map(lang => (
                 <button key={lang.id} onClick={() => handleLanguageChange(lang.id)} style={{ ...s.langBtn, ...(language === lang.id ? s.langBtnActive : {}) }}>
                   <span style={s.langIcon}>{lang.icon}</span>{lang.name}
                 </button>
               ))}
             </div>
             <div style={s.userArea}>
+              <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={s.upgradeHeaderBtn}>✦ Upgrade</button>
               <span style={s.userEmail}>{user.email}</span>
               <button onClick={handleSignOut} style={s.signOutBtn}>Sign out</button>
             </div>
@@ -366,19 +376,11 @@ export default function CodeLens() {
               <>
                 <div style={s.resultsContent}>
                   {!results ? (
-                    <div style={s.emptyState}>
-                      <div style={s.emptyIcon}>⌘</div>
-                      <p style={s.emptyTitle}>Ready to analyze</p>
-                      <p style={s.emptyDesc}>Paste your code on the left and hit Analyze.</p>
-                    </div>
+                    <div style={s.emptyState}><div style={s.emptyIcon}>⌘</div><p style={s.emptyTitle}>Ready to analyze</p><p style={s.emptyDesc}>Paste your code on the left and hit Analyze.</p></div>
                   ) : results.error ? (
                     <div style={s.errorState}><p style={s.errorText}>{results.error}</p></div>
                   ) : results.issues?.length === 0 ? (
-                    <div style={s.emptyState}>
-                      <div style={s.successIcon}>✓</div>
-                      <p style={s.emptyTitle}>No issues found!</p>
-                      <button onClick={() => setRightTab("chat")} style={s.switchToChatBtn}>✦ Open AI Chat</button>
-                    </div>
+                    <div style={s.emptyState}><div style={s.successIcon}>✓</div><p style={s.emptyTitle}>No issues found!</p><button onClick={() => setRightTab("chat")} style={s.switchToChatBtn}>✦ Open AI Chat</button></div>
                   ) : (
                     <>
                       <div style={s.issuesList}>
@@ -392,10 +394,7 @@ export default function CodeLens() {
                                 <span style={s.categoryTag}>{issue.category}</span>
                               </div>
                               <p style={s.issueMessage}>{issue.message}</p>
-                              <div style={s.suggestionBox}>
-                                <span style={s.suggestionLabel}>💡 Fix:</span>
-                                <p style={s.suggestionText}>{issue.suggestion}</p>
-                              </div>
+                              <div style={s.suggestionBox}><span style={s.suggestionLabel}>💡 Fix:</span><p style={s.suggestionText}>{issue.suggestion}</p></div>
                             </div>
                           );
                         })}
@@ -407,29 +406,25 @@ export default function CodeLens() {
                     </>
                   )}
                 </div>
-                {results?.summary && (
-                  <div style={s.summaryFooter}>
-                    <span>{results.summary.language.toUpperCase()} • {results.summary.lines_of_code} lines • {results.summary.total_issues} issues</span>
-                  </div>
-                )}
+                {results?.summary && <div style={s.summaryFooter}><span>{results.summary.language.toUpperCase()} • {results.summary.lines_of_code} lines • {results.summary.total_issues} issues</span></div>}
               </>
             )}
 
             {rightTab === "chat" && (
               <div style={s.chatPanel}>
+                {!atLimit && (
+                  <div style={s.chatLimitBar}>
+                    <span style={s.chatLimitText}>{remainingChats} free message{remainingChats !== 1 ? "s" : ""} remaining</span>
+                    <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={s.chatLimitUpgrade}>Upgrade for unlimited</button>
+                  </div>
+                )}
                 <div style={s.chatMessages}>
                   {chatMessages.length === 0 && !chatLoading && (
                     <div style={s.chatEmpty}>
                       <div style={s.chatEmptyIcon}>✦</div>
                       <p style={s.chatEmptyTitle}>CodeLens AI</p>
                       <p style={s.chatEmptyDesc}>{results ? "Ask me anything about your code." : "Run an analysis first."}</p>
-                      {results && (
-                        <div style={s.quickPrompts}>
-                          {QUICK_PROMPTS.map(prompt => (
-                            <button key={prompt} style={s.quickPromptBtn} onClick={() => sendChatMessage(prompt)}>{prompt}</button>
-                          ))}
-                        </div>
-                      )}
+                      {results && <div style={s.quickPrompts}>{QUICK_PROMPTS.map(prompt => <button key={prompt} style={s.quickPromptBtn} onClick={() => sendChatMessage(prompt)}>{prompt}</button>)}</div>}
                     </div>
                   )}
                   {chatMessages.map((msg, idx) => (
@@ -441,18 +436,16 @@ export default function CodeLens() {
                   {chatLoading && (
                     <div style={{ ...s.chatBubble, ...s.chatBubbleAI }}>
                       <div style={s.chatLabelAI}>✦ CodeLens AI</div>
-                      <div style={{ display: "flex", gap: 4, padding: "4px 0" }}>
-                        <span style={{ fontSize: 8, color: "#6366f1" }}>●</span>
-                        <span style={{ fontSize: 8, color: "#6366f1" }}>●</span>
-                        <span style={{ fontSize: 8, color: "#6366f1" }}>●</span>
-                      </div>
+                      <div style={{ display: "flex", gap: 4, padding: "4px 0" }}><span style={{ fontSize: 8, color: "#6366f1" }}>●</span><span style={{ fontSize: 8, color: "#6366f1" }}>●</span><span style={{ fontSize: 8, color: "#6366f1" }}>●</span></div>
                     </div>
                   )}
                   <div ref={chatBottomRef} />
                 </div>
                 <div style={s.chatInputArea}>
-                  <textarea value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} placeholder={results ? "Ask about your code... (Enter to send)" : "Run analysis first..."} style={s.chatInputBox} disabled={chatLoading || !results} rows={2} />
-                  <button onClick={() => sendChatMessage()} style={{ ...s.chatSendBtn, opacity: !chatInput.trim() || chatLoading || !results ? 0.4 : 1 }} disabled={!chatInput.trim() || chatLoading || !results}>↑</button>
+                  <textarea value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} placeholder={atLimit ? "Upgrade to send more messages" : results ? "Ask about your code... (Enter to send)" : "Run analysis first..."} style={{ ...s.chatInputBox, opacity: atLimit ? 0.5 : 1 }} disabled={chatLoading || !results || atLimit} rows={2} />
+                  <button onClick={() => atLimit ? setShowUpgrade(true) : sendChatMessage()} style={{ ...s.chatSendBtn, opacity: !chatInput.trim() && !atLimit ? 0.4 : 1 }}>
+                    {atLimit ? "✦" : "↑"}
+                  </button>
                 </div>
               </div>
             )}
@@ -475,6 +468,24 @@ function formatMessage(text) {
     return <span key={i}>{inline.map((chunk, j) => chunk.startsWith("`") && chunk.endsWith("`") ? <code key={j} style={{ backgroundColor: "#1a1f35", padding: "1px 5px", borderRadius: 3, fontSize: 12, color: "#a5f3fc", fontFamily: "monospace" }}>{chunk.slice(1,-1)}</code> : <span key={j}>{chunk}</span>)}</span>;
   });
 }
+
+const m = {
+  overlay: { position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" },
+  modal: { backgroundColor: "#0d1120", border: "1px solid #6366f140", borderRadius: 16, padding: "40px 36px", width: "100%", maxWidth: 420, textAlign: "center", fontFamily: "'JetBrains Mono', monospace" },
+  modalHeader: { marginBottom: 28 },
+  sparkle: { fontSize: 32, color: "#6366f1", marginBottom: 12 },
+  modalTitle: { fontSize: 20, fontWeight: 700, color: "#f1f5f9", margin: "0 0 8px" },
+  modalSub: { fontSize: 13, color: "#64748b", margin: 0 },
+  features: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 28, textAlign: "left" },
+  feature: { display: "flex", alignItems: "center", gap: 10 },
+  featureCheck: { color: "#10b981", fontSize: 14, fontWeight: 700, flexShrink: 0 },
+  featureText: { fontSize: 13, color: "#94a3b8" },
+  pricing: { marginBottom: 20 },
+  price: { fontSize: 36, fontWeight: 700, color: "#f1f5f9" },
+  pricePer: { fontSize: 14, color: "#64748b" },
+  upgradeBtn: { width: "100%", padding: "14px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", marginBottom: 10 },
+  dismissBtn: { width: "100%", padding: "10px", borderRadius: 10, border: "1px solid #1a1f35", backgroundColor: "transparent", color: "#475569", fontSize: 13, cursor: "pointer", fontFamily: "inherit" },
+};
 
 const a = {
   container: { minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", fontFamily: "'JetBrains Mono', monospace" },
@@ -514,6 +525,7 @@ const s = {
   langBtnActive: { backgroundColor: "#1a1f35", color: "#e2e8f0", borderColor: "#6366f1" },
   langIcon: { fontSize: 14 },
   userArea: { display: "flex", alignItems: "center", gap: 10 },
+  upgradeHeaderBtn: { padding: "7px 14px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
   userEmail: { fontSize: 11, color: "#475569" },
   signOutBtn: { padding: "6px 12px", borderRadius: 6, border: "1px solid #1a1f35", backgroundColor: "transparent", color: "#64748b", fontSize: 11, cursor: "pointer", fontFamily: "inherit" },
   main: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, flex: 1, padding: "16px 0 20px", minHeight: 0 },
@@ -566,6 +578,9 @@ const s = {
   chatCtaBtn: { padding: "7px 14px", borderRadius: 7, border: "none", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
   summaryFooter: { padding: "10px 14px", borderTop: "1px solid #1a1f35", fontSize: 11, color: "#475569", backgroundColor: "#0f1424", textAlign: "center", flexShrink: 0 },
   chatPanel: { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" },
+  chatLimitBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", backgroundColor: "#6366f110", borderBottom: "1px solid #6366f120", flexShrink: 0 },
+  chatLimitText: { fontSize: 11, color: "#818cf8" },
+  chatLimitUpgrade: { fontSize: 11, color: "#6366f1", backgroundColor: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" },
   chatMessages: { flex: 1, overflowY: "auto", padding: "14px 14px 8px", display: "flex", flexDirection: "column", gap: 12 },
   chatEmpty: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, textAlign: "center", padding: 24, minHeight: 280 },
   chatEmptyIcon: { fontSize: 32, color: "#6366f1", marginBottom: 12 },
