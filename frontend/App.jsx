@@ -197,6 +197,7 @@ function AuthScreen({ onAuth }) {
 export default function CodeLens() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [isPro, setIsPro] = useState(false);
   const [code, setCode] = useState(SAMPLE_CODE.python);
   const [language, setLanguage] = useState("python");
   const [results, setResults] = useState(null);
@@ -210,7 +211,6 @@ export default function CodeLens() {
   const [rightTab, setRightTab] = useState("results");
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [chatCount, setChatCount] = useState(0);
-  const [isPro, setIsPro] = useState(false);
   const textareaRef = useRef(null);
   const lineNumbersRef = useRef(null);
   const chatBottomRef = useRef(null);
@@ -226,16 +226,19 @@ export default function CodeLens() {
     return () => subscription.unsubscribe();
   }, []);
 
-useEffect(() => {
-  if (user) {
-    fetchHistory();
-    checkSubscription(user.email).then(pro => {
-  console.log('Setting isPro to:', pro)
-  setIsPro(pro)
-  if (pro) setChatCount(0);
-});
-  }
-}, [user]);  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
+  useEffect(() => {
+    if (user) {
+      fetchHistory();
+      checkSubscription(user.email).then(pro => {
+        setIsPro(pro);
+        if (pro) setChatCount(0);
+      });
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, chatLoading]);
 
   async function fetchHistory() {
     try {
@@ -264,13 +267,20 @@ useEffect(() => {
   async function sendChatMessage(messageText) {
     const msg = messageText || chatInput.trim();
     if (!msg || chatLoading || !results || results.error) return;
-    if (chatCount >= FREE_CHAT_LIMIT) { setShowUpgrade(true); return; }
+
+    // Only enforce limit for non-pro users
+    if (!isPro && chatCount >= FREE_CHAT_LIMIT) {
+      setShowUpgrade(true);
+      return;
+    }
+
     const updatedMessages = [...chatMessages, { role: "user", content: msg }];
     setChatMessages(updatedMessages);
     setChatInput("");
     setChatLoading(true);
     const newCount = chatCount + 1;
-    setChatCount(newCount);
+    if (!isPro) setChatCount(newCount);
+
     try {
       const res = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, language, issues: results?.issues || [], messages: chatMessages, message: msg }) });
       const data = await res.json();
@@ -279,16 +289,22 @@ useEffect(() => {
       setChatMessages(prev => [...prev, { role: "assistant", content: "Failed to reach the server." }]);
     }
     setChatLoading(false);
-    if (newCount >= FREE_CHAT_LIMIT) setTimeout(() => setShowUpgrade(true), 1500);
+
+    // Only show upgrade modal for non-pro users
+    if (!isPro && newCount >= FREE_CHAT_LIMIT) {
+      setTimeout(() => setShowUpgrade(true), 1500);
+    }
   }
 
   function handleLanguageChange(lang) { setLanguage(lang); setCode(SAMPLE_CODE[lang] || ""); setResults(null); setChatMessages([]); }
   function syncScroll() { if (lineNumbersRef.current && textareaRef.current) lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop; }
-  async function handleSignOut() { await supabase.auth.signOut(); setUser(null); }
+  async function handleSignOut() { await supabase.auth.signOut(); setUser(null); setIsPro(false); setChatCount(0); }
 
-  const remainingChats = FREE_CHAT_LIMIT - chatCount;
-  console.log('isPro:', isPro, 'chatCount:', chatCount)
-  const atLimit = !isPro && chatCount >= FREE_CHAT_LIMIT;  if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
+  // Only limit free users
+  const atLimit = !isPro && chatCount >= FREE_CHAT_LIMIT;
+  const remainingChats = isPro ? null : FREE_CHAT_LIMIT - chatCount;
+
+  if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
   if (!user) return <AuthScreen onAuth={setUser} />;
 
   const lines = code.split("\n");
@@ -302,7 +318,10 @@ useEffect(() => {
         <header style={s.header}>
           <div style={s.headerLeft}>
             <div style={s.logoMark}><span style={s.logoSlash}>&lt;/&gt;</span></div>
-            <div><h1 style={s.logoText}>CodeLens</h1><p style={s.logoSub}>Static Analysis + AI Debugger</p></div>
+            <div>
+              <h1 style={s.logoText}>CodeLens</h1>
+              <p style={s.logoSub}>Static Analysis + AI Debugger</p>
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={s.langPicker}>
@@ -313,7 +332,8 @@ useEffect(() => {
               ))}
             </div>
             <div style={s.userArea}>
-              <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={s.upgradeHeaderBtn}>✦ Upgrade</button>
+              {!isPro && <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={s.upgradeHeaderBtn}>✦ Upgrade</button>}
+              {isPro && <span style={s.proBadge}>✦ Pro</span>}
               <span style={s.userEmail}>{user.email}</span>
               <button onClick={handleSignOut} style={s.signOutBtn}>Sign out</button>
             </div>
@@ -420,7 +440,7 @@ useEffect(() => {
 
             {rightTab === "chat" && (
               <div style={s.chatPanel}>
-                {!atLimit && (
+                {!isPro && remainingChats !== null && remainingChats >= 0 && (
                   <div style={s.chatLimitBar}>
                     <span style={s.chatLimitText}>{remainingChats} free message{remainingChats !== 1 ? "s" : ""} remaining</span>
                     <button onClick={() => window.open(CHECKOUT_URL, "_blank")} style={s.chatLimitUpgrade}>Upgrade for unlimited</button>
@@ -450,8 +470,19 @@ useEffect(() => {
                   <div ref={chatBottomRef} />
                 </div>
                 <div style={s.chatInputArea}>
-                  <textarea value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }} placeholder={atLimit ? "Upgrade to send more messages" : results ? "Ask about your code... (Enter to send)" : "Run analysis first..."} style={{ ...s.chatInputBox, opacity: atLimit ? 0.5 : 1 }} disabled={chatLoading || !results || atLimit} rows={2} />
-                  <button onClick={() => atLimit ? setShowUpgrade(true) : sendChatMessage()} style={{ ...s.chatSendBtn, opacity: !chatInput.trim() && !atLimit ? 0.4 : 1 }}>
+                  <textarea
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
+                    placeholder={atLimit ? "Upgrade to send more messages" : results ? "Ask about your code... (Enter to send)" : "Run analysis first..."}
+                    style={{ ...s.chatInputBox, opacity: atLimit ? 0.5 : 1 }}
+                    disabled={chatLoading || !results || atLimit}
+                    rows={2}
+                  />
+                  <button
+                    onClick={() => atLimit ? setShowUpgrade(true) : sendChatMessage()}
+                    style={{ ...s.chatSendBtn, opacity: !chatInput.trim() && !atLimit ? 0.4 : 1 }}
+                  >
                     {atLimit ? "✦" : "↑"}
                   </button>
                 </div>
@@ -534,6 +565,7 @@ const s = {
   langIcon: { fontSize: 14 },
   userArea: { display: "flex", alignItems: "center", gap: 10 },
   upgradeHeaderBtn: { padding: "7px 14px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
+  proBadge: { padding: "5px 10px", borderRadius: 8, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 12, fontWeight: 600 },
   userEmail: { fontSize: 11, color: "#475569" },
   signOutBtn: { padding: "6px 12px", borderRadius: 6, border: "1px solid #1a1f35", backgroundColor: "transparent", color: "#64748b", fontSize: 11, cursor: "pointer", fontFamily: "inherit" },
   main: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, flex: 1, padding: "16px 0 20px", minHeight: 0 },
