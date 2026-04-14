@@ -6,6 +6,7 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 export const supabase = createClient(supabaseUrl, supabaseKey)
 
 export async function checkSubscription(email) {
+  console.log('Checking sub for:', email)
   try {
     const res = await fetch('https://codelens-debugger.onrender.com/api/check-subscription', {
       method: 'POST',
@@ -13,8 +14,10 @@ export async function checkSubscription(email) {
       body: JSON.stringify({ email })
     })
     const data = await res.json()
+    console.log('Sub result:', data)
     return data.pro
   } catch (e) {
+    console.log('Sub error:', e)
     return false
   }
 }
