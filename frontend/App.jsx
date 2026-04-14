@@ -287,8 +287,8 @@ useEffect(() => {
   async function handleSignOut() { await supabase.auth.signOut(); setUser(null); }
 
   const remainingChats = FREE_CHAT_LIMIT - chatCount;
-  const atLimit = !isPro && chatCount >= FREE_CHAT_LIMIT;
-  if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
+  console.log('isPro:', isPro, 'chatCount:', chatCount)
+  const atLimit = !isPro && chatCount >= FREE_CHAT_LIMIT;  if (authLoading) return <div style={{ minHeight: "100vh", backgroundColor: "#0a0e17", display: "flex", alignItems: "center", justifyContent: "center" }}><p style={{ color: "#64748b", fontFamily: "monospace" }}>Loading...</p></div>;
   if (!user) return <AuthScreen onAuth={setUser} />;
 
   const lines = code.split("\n");
