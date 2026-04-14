@@ -229,7 +229,10 @@ export default function CodeLens() {
 useEffect(() => {
   if (user) {
     fetchHistory();
-    checkSubscription(user.email).then(pro => setIsPro(pro));
+    checkSubscription(user.email).then(pro => {
+      console.log('Setting isPro to:', pro)
+      setIsPro(pro)
+  });
   }
 }, [user]);  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
 
