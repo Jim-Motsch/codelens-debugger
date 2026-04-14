@@ -230,9 +230,10 @@ useEffect(() => {
   if (user) {
     fetchHistory();
     checkSubscription(user.email).then(pro => {
-      console.log('Setting isPro to:', pro)
-      setIsPro(pro)
-  });
+  console.log('Setting isPro to:', pro)
+  setIsPro(pro)
+  if (pro) setChatCount(0);
+});
   }
 }, [user]);  useEffect(() => { if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, chatLoading]);
 
